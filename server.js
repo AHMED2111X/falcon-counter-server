@@ -319,18 +319,18 @@ async function processUpdate(update) {
                 codes.delete(code);
                 await telegramJson(VERIFY_BOT_TOKEN, 'answerCallbackQuery', {
                     callback_query_id: cq.id,
-                    text: '✅ تم التحقق — ارجع إلى الواجهة.'
+                    text: '✅ أنت منضم إلى القناة — ارجع إلى الواجهة.'
                 });
                 await telegramJson(VERIFY_BOT_TOKEN, 'editMessageText', {
                     chat_id: cq.message && cq.message.chat && cq.message.chat.id,
                     message_id: cq.message && cq.message.message_id,
-                    text: '✅ تم التحقق من عضويتك في قناة FALCON.\nارجع الآن إلى واجهة FALCON TRICKY — ستُفتح تلقائياً.',
+                    text: '✅ أنت منضم إلى قناة FALCON — تم التحقق بنجاح.\nارجع الآن إلى واجهة FALCON TRICKY — ستُفتح تلقائياً.',
                     disable_web_page_preview: true
                 });
             } else {
                 await telegramJson(VERIFY_BOT_TOKEN, 'answerCallbackQuery', {
                     callback_query_id: cq.id,
-                    text: '❌ لم نجد عضويتك بعد — اضغط «انضم» أولاً ثم أعد التحقق.',
+                    text: '❌ لست منضمًا إلى القناة بعد — اضغط «انضم» أولاً ثم أعد التحقق.',
                     show_alert: true
                 });
             }
@@ -356,8 +356,8 @@ async function processUpdate(update) {
     if (!code) {
         await sendMessage(VERIFY_BOT_TOKEN, msg.chat.id,
             'مرحباً بك في بوت التحقق من قناة FALCON.\n\n' +
-            '1) اضغط «انضم إلى قناة FALCON» ثم «انضمام / Join».\n' +
-            '2) ارجع إلى الواجهة (FALCON TRICKY) وأكمل التحقق.',
+            'إذا كنت منضمًا إلى القناة بالفعل فاضغط «تحقّق من الانضمام» وسأؤكد ذلك فوراً.\n' +
+            'وإلا: اضغط «انضم إلى قناة FALCON» ثم «انضمام / Join» وأعد المحاولة.',
             joinKeyboard(null));
         return;
     }
@@ -379,11 +379,11 @@ async function processUpdate(update) {
             deviceVerified.set(s.deviceId, Date.now());
             codes.delete(code);
             await sendMessage(VERIFY_BOT_TOKEN, msg.chat.id,
-                '✅ تم التحقق من عضويتك في قناة FALCON.\nارجع الآن إلى واجهة FALCON TRICKY — ستُفتح تلقائياً.',
+                '✅ أنت منضم إلى قناة FALCON — تم التحقق بنجاح.\nارجع الآن إلى واجهة FALCON TRICKY — ستُفتح تلقائياً.',
                 null);
         } else {
             await sendMessage(VERIFY_BOT_TOKEN, msg.chat.id,
-                '❌ لم نجد عضويتك في القناة بعد.\nاضغط «انضم إلى قناة FALCON» أولاً، ثم اضغط «تحقّق من الانضمام».',
+                '❌ لست منضمًا إلى قناة FALCON بعد.\nاضغط «انضم إلى قناة FALCON» أولاً، ثم اضغط «تحقّق من الانضمام».',
                 joinKeyboard(code));
         }
     } catch (e) {
