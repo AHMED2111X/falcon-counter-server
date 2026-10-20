@@ -115,7 +115,8 @@ async function checkMember(userId) {
     });
     if (!r.ok) {
         const desc = String(r.description || '');
-        if (/user not found|participant_id_invalid|user_id_invalid|invalid user identifier/i.test(desc)) {
+        /* (v3.22) تيليجرام يرجّع "member not found" لغير المنضمّين في القنوات — يجب اعتباره "غير عضو" لا خطأ */
+        if (/user not found|member not found|participant_id_invalid|user_id_invalid|invalid user identifier|chat_admin_required/i.test(desc)) {
             return { member: false, status: 'not_found' };
         }
         throw new Error(desc || 'telegram_error');
