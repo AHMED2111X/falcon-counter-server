@@ -30,11 +30,12 @@ const VERIFY_BOT_TOKEN = String(process.env.VERIFY_BOT_TOKEN || '').trim();
 const CHANNEL = String(process.env.TG_CHANNEL || '@FALCON_KERNEL_PRO').trim();
 const PUBLIC_URL = String(process.env.PUBLIC_URL || 'https://falcon-counter-server.onrender.com').replace(/\/+$/, '');
 const SESSION_TTL = 15 * 60 * 1000;
-const DEVICE_TTL = 24 * 60 * 60 * 1000;
+const DEVICE_TTL = 30 * 24 * 60 * 60 * 1000;   // (v3.22) 30 يوماً بدل 24 ساعة
+const RECHECK_MS = 60 * 1000;                 // (v3.22) إعادة فحص العضوية الحيّة كل دقيقة
 
 const sessions = new Map();       // sid -> {created, deviceId, mode, status, code, tgId, checks}
 const codes = new Map();          // code -> sid
-const deviceVerified = new Map(); // deviceId -> timestamp
+const deviceVerified = new Map(); // deviceId -> {tgId, at, chk}
 let VERIFY_BOT_USERNAME = '';
 
 /* (v3.22 hardening) وضع البوت الآمن: عند تفعيل بوت التحقق، يُمنع مسار الـ ID الرقمي نهائياً
@@ -58,8 +59,8 @@ function sweep() {
             if (s.code) codes.delete(s.code);
         }
     }
-    for (const [dev, at] of deviceVerified.entries()) {
-        if (now - at > DEVICE_TTL) deviceVerified.delete(dev);
+    for (const [dev, rec] of deviceVerified.entries()) {
+        if (now - (rec && rec.at ? rec.at : 0) > DEVICE_TTL) deviceVerified.delete(dev);
     }
     for (const [ip, r] of rateHits.entries()) {
         if (now - r.at > 60000) rateHits.delete(ip);
@@ -129,6 +130,82 @@ async function checkMember(userId) {
     return { member, status: st || 'unknown', name };
 }
 
+/* ========================= (v3.22) إعادة فحص العضوية الحيّة =========================
+   العلامة المحلية/الخادمية لا تكفي: لو غادر المستخدم القناة بعد التحقق، يجب أن
+   تُلغى الحالة فوراً ويُطلب التحقق من البوت مرة أخرى. الخادم يتحقق من العضوية
+   الفعلية عبر getChatMember قبل اعتماد أي جهاز "متحقَّق".                          */
+async function deviceStillMember(deviceId) {
+    const rec = deviceVerified.get(deviceId);
+    if (!rec || !rec.tgId) return false;
+    const now = Date.now();
+    if (rec.chk && now - rec.chk < RECHECK_MS) return rec.ok !== false;
+    try {
+        const m = await checkMember(rec.tgId);
+        rec.chk = now;
+        rec.ok = !!m.member;
+        console.log('recheck device ...' + String(deviceId).slice(-8) + ' -> ' + (m.member ? 'member (' + m.status + ')' : 'NOT a member (' + m.status + ')'));
+        if (!m.member) {
+            deviceVerified.delete(deviceId);
+            saveDevices();
+            return false;
+        }
+        return true;
+    } catch (e) {
+        // فشل مؤقت في الشبكة/تيليجرام: لا نُلغي التحقق (تجنّب إزعاج المستخدم)
+        rec.chk = now;
+        rec.ok = true;
+        return true;
+    }
+}
+
+/* ------------------------------ تخزين الأجهزة -------------------------------- */
+const DEVICE_STORE = process.env.DEVICE_STORE || (require('path').join(__dirname, '.falcon_devices.json'));
+let deviceSaveTimer = null;
+
+function loadDevices() {
+    try {
+        const fs = require('fs');
+        if (!fs.existsSync(DEVICE_STORE)) return;
+        const raw = fs.readFileSync(DEVICE_STORE, 'utf8');
+        const obj = JSON.parse(raw || '{}');
+        const now = Date.now();
+        Object.keys(obj || {}).forEach(function (id) {
+            const rec = obj[id];
+            if (!rec || !rec.tgId) return;
+            if (now - (rec.at || 0) > DEVICE_TTL) return;
+            deviceVerified.set(id, { tgId: rec.tgId, at: rec.at || now, chk: 0, ok: true });
+        });
+        console.log('loaded verified devices: ' + deviceVerified.size);
+    } catch (e) {
+        console.log('device store load skipped: ' + String(e.message || e));
+    }
+}
+
+function saveDevices() {
+    if (deviceSaveTimer) return;
+    deviceSaveTimer = setTimeout(function () {
+        deviceSaveTimer = null;
+        try {
+            const fs = require('fs');
+            const obj = {};
+            const now = Date.now();
+            deviceVerified.forEach(function (rec, id) {
+                if (now - (rec.at || 0) > DEVICE_TTL) return;
+                obj[id] = { tgId: rec.tgId, at: rec.at || now };
+            });
+            fs.writeFileSync(DEVICE_STORE, JSON.stringify(obj), 'utf8');
+        } catch (e) {
+            console.log('device store save failed: ' + String(e.message || e));
+        }
+    }, 1500);
+    if (deviceSaveTimer.unref) deviceSaveTimer.unref();
+}
+
+function markDeviceVerified(deviceId, tgId) {
+    deviceVerified.set(deviceId, { tgId: Number(tgId), at: Date.now(), chk: Date.now(), ok: true });
+    saveDevices();
+}
+
 async function sendMessage(token, chatId, text, keyboard) {
     const payload = {
         chat_id: chatId,
@@ -149,7 +226,7 @@ function joinKeyboard(code) {
 }
 
 /* ------------------------------- API: start ------------------------------- */
-app.post('/tg/start', (req, res) => {
+app.post('/tg/start', async (req, res) => {
     if (!rateAllow(req.ip || 'x', 12)) {
         return res.status(429).json({ ok: false, error: 'rate_limit' });
     }
@@ -162,8 +239,20 @@ app.post('/tg/start', (req, res) => {
 
     const now = Date.now();
     const dv = deviceVerified.get(deviceId);
-    if (dv && now - dv < DEVICE_TTL) {
-        return res.json({ ok: true, status: 'verified', mode: 'verified' });
+    if (dv && now - (dv.at || 0) < DEVICE_TTL) {
+        /* (v3.22) لا نثق بعلامة قديمة: نعيد فحص العضوية الحيّة من تيليجرام.
+           لو غادر المستخدم القناة تُلغى الحالة ويُطلب التحقق من البوت من جديد. */
+        let stillMember = false;
+        try {
+            stillMember = await deviceStillMember(deviceId);
+        } catch (e) {
+            stillMember = false;
+        }
+        if (stillMember) {
+            return res.json({ ok: true, status: 'verified', mode: 'verified' });
+        }
+        deviceVerified.delete(deviceId);
+        saveDevices();
     }
 
     const sid = crypto.randomBytes(16).toString('hex');
@@ -247,7 +336,7 @@ app.post('/tg/check', async (req, res) => {
         if (m.member) {
             s.status = 'verified';
             s.tgId = uid;
-            deviceVerified.set(s.deviceId, Date.now());
+            markDeviceVerified(s.deviceId, uid);
             if (s.code) codes.delete(s.code);
             return res.json({ ok: true, member: true, status: m.status, name: m.name });
         }
@@ -315,7 +404,7 @@ async function processUpdate(update) {
             if (m.member) {
                 s.status = 'verified';
                 s.tgId = uid;
-                deviceVerified.set(s.deviceId, Date.now());
+                markDeviceVerified(s.deviceId, uid);
                 codes.delete(code);
                 await telegramJson(VERIFY_BOT_TOKEN, 'answerCallbackQuery', {
                     callback_query_id: cq.id,
@@ -376,7 +465,7 @@ async function processUpdate(update) {
         if (m.member) {
             s.status = 'verified';
             s.tgId = uid;
-            deviceVerified.set(s.deviceId, Date.now());
+            markDeviceVerified(s.deviceId, uid);
             codes.delete(code);
             await sendMessage(VERIFY_BOT_TOKEN, msg.chat.id,
                 '✅ أنت منضم إلى قناة FALCON — تم التحقق بنجاح.\nارجع الآن إلى واجهة FALCON TRICKY — ستُفتح تلقائياً.',
@@ -465,5 +554,6 @@ app.get('/health', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log('Server running on port ' + PORT);
+    loadDevices();
     setupTelegram().catch(() => {});
 });
