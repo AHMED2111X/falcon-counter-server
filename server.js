@@ -37,6 +37,12 @@ const codes = new Map();          // code -> sid
 const deviceVerified = new Map(); // deviceId -> timestamp
 let VERIFY_BOT_USERNAME = '';
 
+/* (v3.22 hardening) وضع البوت الآمن: عند تفعيل بوت التحقق، يُمنع مسار الـ ID الرقمي نهائياً
+   لأن الرقم قابل للانتحال (يمكن لأي شخص إدخال رقم عضو آخر). التحقق الصحيح يتم عبر البوت فقط. */
+function botModeActive() {
+    return !!(VERIFY_BOT_TOKEN && VERIFY_BOT_USERNAME);
+}
+
 const WEBHOOK_PATH = VERIFY_BOT_TOKEN
     ? crypto.createHash('sha256').update(VERIFY_BOT_TOKEN + '|falcon-webhook').digest('hex').slice(0, 32)
     : 'disabled';
@@ -164,7 +170,7 @@ app.post('/tg/start', (req, res) => {
     let code = null;
     let deepLink = null;
 
-    if (VERIFY_BOT_TOKEN && VERIFY_BOT_USERNAME) {
+    if (botModeActive()) {
         mode = 'bot';
         code = crypto.randomBytes(5).toString('hex');
         deepLink = 'https://t.me/' + VERIFY_BOT_USERNAME + '?start=' + code;
@@ -195,6 +201,10 @@ app.post('/tg/start', (req, res) => {
 app.post('/tg/check', async (req, res) => {
     if (!rateAllow(req.ip || 'x', 30)) {
         return res.status(429).json({ ok: false, error: 'rate_limit' });
+    }
+    /* (v3.22 hardening) رفض التحقق برقم المستخدم في وضع البوت — يمنع تجاوز واجهة الويب أو API */
+    if (botModeActive()) {
+        return res.status(403).json({ ok: false, error: 'bot_mode_required', mode: 'bot' });
     }
     const sid = String((req.body && req.body.sid) || '');
     const tg = String((req.body && req.body.tg) || '').trim();
@@ -269,7 +279,7 @@ app.get('/tg/health', (req, res) => {
         ok: true,
         counter: true,
         verify: !!(BOT_TOKEN || VERIFY_BOT_TOKEN),
-        botMode: !!(VERIFY_BOT_TOKEN && VERIFY_BOT_USERNAME),
+        botMode: botModeActive(),
         channel: CHANNEL
     });
 });
